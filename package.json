@@ -1,6 +1,6 @@
 {
   "name": "cascadn",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Convert GitHub URLs into CDN links (jsDelivr, Statically, GitHub Raw) and fetch the JSON with automatic fallback and caching.",
   "type": "module",
   "main": "./src/index.js",

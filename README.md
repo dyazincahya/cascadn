@@ -1,7 +1,7 @@
 # cascadn
 
 <p align="center">
-  <img src="logo-wide.png" alt="cascadn" width="600">
+  <img src="https://raw.githubusercontent.com/dyazincahya/cascadn/main/logo-wide.png" alt="cascadn" width="600">
 </p>
 
 <p align="center">
