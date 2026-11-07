@@ -16,6 +16,8 @@
   },
   "files": [
     "src",
+    "logo.png",
+    "logo-wide.png",
     "README.md",
     "LICENSE"
   ],

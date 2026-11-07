@@ -1,5 +1,9 @@
 # cascadn
 
+<p align="center">
+  <img src="logo-wide.png" alt="cascadn" width="600">
+</p>
+
 A library that converts GitHub URLs into **CDN links** (jsDelivr, Statically, GitHub Raw) and fetches the JSON with **automatic fallback** and caching:
 
 ```
