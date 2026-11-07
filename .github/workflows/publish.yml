@@ -13,6 +13,7 @@ jobs:
   publish:
     name: Verify & Publish
     runs-on: ubuntu-latest
+    environment: Production
 
     steps:
       - name: Checkout
@@ -44,6 +45,12 @@ jobs:
         run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Publish to npm
-        run: npm publish --access public
+        # Accepts either secret name so it works out of the box.
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.NODE_AUTH_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::npm token not found. Add a repository secret named NPM_TOKEN. If the secret lives in an Environment, declare 'environment: <name>' on this job."
+            exit 1
+          fi
+          npm publish --access public
