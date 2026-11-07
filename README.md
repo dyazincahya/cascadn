@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/dyazincahya/cascadn/actions/workflows/publish.yml"><img alt="publish workflow" src="https://github.com/dyazincahya/cascadn/actions/workflows/publish.yml/badge.svg"></a>
   <a href="https://www.npmjs.com/package/cascadn"><img alt="npm version" src="https://img.shields.io/npm/v/cascadn?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
   <a href="https://www.npmjs.com/package/cascadn"><img alt="npm downloads" src="https://img.shields.io/npm/dm/cascadn?style=flat-square&amp;color=cb3837"></a>
   <a href="https://bundlephobia.com/package/cascadn"><img alt="minzipped size" src="https://img.shields.io/bundlephobia/minzip/cascadn?style=flat-square&amp;label=minzip"></a>
