@@ -1,0 +1,141 @@
+<!doctype html>
+<!--
+  Contoh 6: pemakaian di browser (tanpa bundler).
+  Jalankan dari root package, misalnya:
+    npx serve .
+  lalu buka http://localhost:3000/examples/browser.html
+-->
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cascadn — contoh browser</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 32px;
+        background: #f8f9fa;
+        color: #202124;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      form {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      input {
+        flex: 1;
+        padding: 10px 12px;
+        border: 1px solid #dfe1e5;
+        border-radius: 8px;
+        font-size: 14px;
+      }
+      button {
+        padding: 10px 16px;
+        border: 0;
+        border-radius: 8px;
+        background: #1a73e8;
+        color: #fff;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: progress;
+      }
+      .meta {
+        font-size: 13px;
+        color: #5f6368;
+        margin-bottom: 12px;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #e8f0fe;
+        color: #1a73e8;
+        font-weight: 600;
+      }
+      pre {
+        background: #202124;
+        color: #e8eaed;
+        padding: 16px;
+        border-radius: 12px;
+        overflow: auto;
+        max-height: 420px;
+        font-size: 13px;
+      }
+      .error {
+        color: #d93025;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>cascadn</h1>
+      <p class="meta">
+        Tempel URL file JSON GitHub, lalu ambil isinya lewat CDN dengan fallback otomatis
+        (jsDelivr &rarr; Statically &rarr; GitHub Raw).
+      </p>
+
+      <form id="form">
+        <input
+          id="source"
+          type="url"
+          value="https://github.com/dyazincahya/iqro-json/blob/main/hijaiyah-letters.json"
+          placeholder="https://github.com/user/repo/blob/main/data.json"
+          required
+        />
+        <button id="submit" type="submit">Ambil JSON</button>
+      </form>
+
+      <div class="meta" id="meta">Belum ada request.</div>
+      <pre id="output">// hasil JSON akan tampil di sini</pre>
+    </main>
+
+    <script type="module">
+      import { createClient } from "../src/index.js";
+
+      const client = createClient({ cacheTTL: 5 * 60 * 1000 });
+
+      const form = document.getElementById("form");
+      const input = document.getElementById("source");
+      const submit = document.getElementById("submit");
+      const meta = document.getElementById("meta");
+      const output = document.getElementById("output");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        submit.disabled = true;
+        meta.textContent = "Mengambil data...";
+        output.textContent = "";
+
+        try {
+          const result = await client.fetchJson(input.value.trim());
+          const fallbackNote =
+            result.attempts.length > 1 ? ` (${result.attempts.length} percobaan)` : "";
+
+          meta.innerHTML =
+            `<span class="badge">${result.provider}</span> ` +
+            `${result.cdnUrl}${fallbackNote}` +
+            `${result.cached ? " &middot; dari cache" : ""}`;
+
+          output.textContent = JSON.stringify(result.data, null, 2);
+        } catch (error) {
+          meta.innerHTML = `<span class="error">${error.name}: ${error.message}</span>`;
+
+          if (error.attempts) {
+            output.textContent = JSON.stringify(error.attempts, null, 2);
+          }
+        } finally {
+          submit.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
