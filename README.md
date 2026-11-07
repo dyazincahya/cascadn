@@ -4,6 +4,16 @@
   <img src="logo-wide.png" alt="cascadn" width="600">
 </p>
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/cascadn"><img alt="npm version" src="https://img.shields.io/npm/v/cascadn?style=flat-square&amp;label=npm&amp;color=cb3837"></a>
+  <a href="https://www.npmjs.com/package/cascadn"><img alt="npm downloads" src="https://img.shields.io/npm/dm/cascadn?style=flat-square&amp;color=cb3837"></a>
+  <a href="https://bundlephobia.com/package/cascadn"><img alt="minzipped size" src="https://img.shields.io/bundlephobia/minzip/cascadn?style=flat-square&amp;label=minzip"></a>
+  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/npm/l/cascadn?style=flat-square&amp;color=blue"></a>
+  <a href="https://nodejs.org"><img alt="node version" src="https://img.shields.io/node/v/cascadn?style=flat-square"></a>
+  <img alt="zero dependencies" src="https://img.shields.io/badge/dependencies-0-brightgreen?style=flat-square">
+  <a href="https://www.typescriptlang.org"><img alt="TypeScript types" src="https://img.shields.io/npm/types/cascadn?style=flat-square&amp;color=3178c6"></a>
+</p>
+
 A library that converts GitHub URLs into **CDN links** (jsDelivr, Statically, GitHub Raw) and fetches the JSON with **automatic fallback** and caching:
 
 ```
