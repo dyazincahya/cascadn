@@ -56,11 +56,15 @@ export interface Attempt {
   status: number | null;
   /** Pesan error, hanya ada saat `ok` bernilai false. */
   error?: string;
+  /** true bila kegagalan disebabkan body yang bukan JSON valid. */
+  invalidJson?: boolean;
   durationMs: number;
 }
 
-/** Objek hasil dari `fetchJson`. */
+/** Objek hasil sukses dari `fetchJson`. */
 export interface FetchResult<T = unknown> {
+  /** Pembeda: selalu `true` pada hasil sukses. */
+  ok: true;
   /** Id provider yang berhasil melayani. */
   provider: string;
   /** Nama tampilan provider yang berhasil. */
@@ -73,13 +77,45 @@ export interface FetchResult<T = unknown> {
   source: CDNSource;
   /** Riwayat percobaan tiap provider, urut sesuai eksekusi. */
   attempts: Attempt[];
+  /** true bila body perlu diperbaiki dulu (BOM/komentar/trailing comma) sebelum berhasil diparse. */
+  jsonRepaired: boolean;
   /** true bila hasil diambil dari cache. */
   cached: boolean;
   /** true bila request ini digabung dengan request lain yang identik dan sedang berjalan. */
   shared: boolean;
   /** Waktu pengambilan data (ISO 8601). */
   fetchedAt: string;
+  /** Selalu `null` pada hasil sukses; berisi pesan hanya saat gagal. */
+  message: null;
 }
+
+/**
+ * Envelope kegagalan dengan bentuk yang sama seperti hasil sukses.
+ * Dikembalikan (bukan dilempar) saat semua provider mengembalikan JSON
+ * yang tidak valid dan tidak bisa diperbaiki.
+ */
+export interface FetchFailure {
+  /** Pembeda: selalu `false` pada envelope kegagalan. */
+  ok: false;
+  provider: null;
+  providerName: null;
+  cdnUrl: null;
+  /** Tidak ada data yang bisa diparse. */
+  data: null;
+  /** Sumber GitHub hasil normalisasi. */
+  source: CDNSource;
+  /** Riwayat percobaan tiap provider, berisi alasan dan cuplikan body. */
+  attempts: Attempt[];
+  jsonRepaired: boolean;
+  cached: boolean;
+  shared: boolean;
+  fetchedAt: string;
+  /** Pesan jelas dalam English. */
+  message: string;
+}
+
+/** Hasil `fetchJson`: salah satu dari hasil sukses atau envelope kegagalan. */
+export type FetchOutcome<T = unknown> = FetchResult<T> | FetchFailure;
 
 /** Adapter cache kustom (mis. Redis/localStorage). Boleh sinkron maupun async. */
 export interface CacheAdapter {
@@ -102,6 +138,11 @@ export interface ClientOptions {
   headers?: Record<string, string>;
   /** Parse body sebagai JSON. Default true; isi false untuk teks mentah. */
   parseJson?: boolean;
+  /**
+   * Perbaikan JSON konservatif sebelum parse: BOM, komentar (`//`, block),
+   * dan trailing comma. Default true.
+   */
+  jsonRepair?: boolean;
   /** Aktifkan cache. Default true. */
   cache?: boolean;
   /** Umur entri cache (ms). Default 300000. */
@@ -122,7 +163,7 @@ export interface ClientOptions {
 
 /** Instance yang dikembalikan `createClient`. */
 export interface CDNClient {
-  fetchJson<T = unknown>(input: SourceInput, options?: ClientOptions): Promise<FetchResult<T>>;
+  fetchJson<T = unknown>(input: SourceInput, options?: ClientOptions): Promise<FetchOutcome<T>>;
   fetchJsonData<T = unknown>(input: SourceInput, options?: ClientOptions): Promise<T>;
   buildCdnUrls(input: SourceInput, options?: ClientOptions): CdnUrl[];
   clearCache(): Promise<void>;
@@ -137,6 +178,8 @@ export declare class ParseError extends CDNError {
 export declare class FetchError extends CDNError {
   attempts: Attempt[];
   source: CDNSource | null;
+  /** true bila seluruh provider gagal karena JSON tidak valid, bukan karena jaringan/HTTP. */
+  invalidJson: boolean;
 }
 
 /** Cache in-memory berbasis TTL dengan eviksi LRU. */
@@ -169,13 +212,17 @@ export declare function resolveProviders(
 /** Buat client dengan konfigurasi sendiri. */
 export declare function createClient(options?: ClientOptions): CDNClient;
 
-/** Ambil JSON dari CDN dengan fallback otomatis. */
+/**
+ * Ambil JSON dari CDN dengan fallback otomatis.
+ * Melempar `FetchError` untuk kegagalan HTTP/jaringan; mengembalikan
+ * envelope `ok: false` saat JSON tidak valid dan tidak bisa diperbaiki.
+ */
 export declare function fetchJson<T = unknown>(
   input: SourceInput,
   options?: ClientOptions,
-): Promise<FetchResult<T>>;
+): Promise<FetchOutcome<T>>;
 
-/** Ambil isi JSON saja (tanpa metadata). */
+/** Ambil isi JSON saja. Melempar `FetchError` bila JSON tidak bisa diparse. */
 export declare function fetchJsonData<T = unknown>(
   input: SourceInput,
   options?: ClientOptions,

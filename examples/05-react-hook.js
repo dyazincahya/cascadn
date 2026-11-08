@@ -39,6 +39,11 @@ export function useCdnJson(source, options = {}) {
       try {
         const result = await cdnClient.fetchJson(source, { ...fetchOptions, ...override });
         if (id !== requestId.current) return;
+
+        // JSON rusak yang tidak bisa diperbaiki dikembalikan sebagai envelope,
+        // bukan dilempar, jadi harus diperiksa agar tidak tampak seperti sukses.
+        if (!result.ok) throw new Error(result.message);
+
         setState({
           data: result.data,
           loading: false,

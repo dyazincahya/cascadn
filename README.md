@@ -28,6 +28,28 @@ If one CDN fails (HTTP error, timeout, network failure, or a non-JSON response),
 - In-memory cache based on TTL + LRU, swappable with your own adapter (Redis/localStorage)
 - Single-flight: identical concurrent requests are merged into one
 
+> **Upgrading from 1.x?** `fetchJson()` no longer throws when the JSON cannot be repaired — it resolves with a response whose `ok` is `false` and `data` is `null`. See [Migrating from 1.x](#migrating-from-1x).
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Response Shape](#response-shape)
+- [Invalid JSON Handling](#invalid-json-handling)
+  - [Repairing broken JSON](#repairing-broken-json)
+- [Accepted Input Formats](#accepted-input-formats)
+- [Configuration](#configuration)
+- [Cache](#cache)
+  - [Cache semantics](#cache-semantics)
+  - [Custom cache adapter](#custom-cache-adapter)
+- [Custom Providers](#custom-providers)
+- [Error Handling](#error-handling)
+- [API](#api)
+- [Examples](#examples)
+- [Test](#test)
+- [Migrating from 1.x](#migrating-from-1x)
+- [License](#license)
+
 ## Installation
 
 ```bash
@@ -43,6 +65,9 @@ import { fetchJson, fetchJsonData, buildCdnUrls } from "cascadn";
 const res = await fetchJson(
   "https://github.com/dyazincahya/iqro-json/blob/main/hijaiyah-letters.json",
 );
+
+// HTTP/network failures throw FetchError; unrepairable JSON returns ok: false
+if (!res.ok) throw new Error(res.message);
 
 console.log(res.provider); // "jsdelivr" (or "statically" / "github-raw")
 console.log(res.data);     // the parsed JSON content
@@ -66,6 +91,7 @@ buildCdnUrls("https://github.com/user/repo/blob/main/data.json");
 
 ```json
 {
+  "ok": true,
   "provider": "jsdelivr",
   "providerName": "jsDelivr",
   "cdnUrl": "https://cdn.jsdelivr.net/gh/user/repo@main/data.json",
@@ -81,22 +107,98 @@ buildCdnUrls("https://github.com/user/repo/blob/main/data.json");
   "attempts": [
     { "provider": "jsdelivr", "cdnUrl": "https://cdn.jsdelivr.net/...", "ok": true, "status": 200, "durationMs": 84 }
   ],
+  "jsonRepaired": false,
   "cached": false,
   "shared": false,
-  "fetchedAt": "2026-11-05T10:00:00.000Z"
+  "fetchedAt": "2026-11-05T10:00:00.000Z",
+  "message": null
 }
 ```
 
 | Field | Meaning |
 | --- | --- |
+| `ok` | `true` on success, `false` on the failure envelope |
 | `provider` / `providerName` | Id and name of the provider that served the request |
 | `cdnUrl` | The CDN URL actually used |
 | `data` | The parsed JSON content (or raw text when `parseJson: false`) |
 | `source.githubUrl` | The canonical GitHub URL of the source |
 | `attempts` | Attempt history for each provider, useful for logging |
+| `jsonRepaired` | `true` when the body had to be repaired before it could be parsed |
 | `cached` | `true` when the result came from cache |
 | `shared` | `true` when the request was merged with an identical in-flight request |
 | `fetchedAt` | Time the data was fetched (ISO 8601) |
+| `message` | Clear English explanation; always `null` on success |
+
+## Invalid JSON Handling
+
+Every response body is validated before it is returned, so a non-JSON body never silently becomes `data`.
+
+The repair pass runs first and automatically. Only if a body is **still** invalid after that does `fetchJson()` give up, and when every provider fails that way it **returns the same envelope shape as a successful response** with `ok: false` instead of throwing:
+
+```json
+{
+  "ok": false,
+  "provider": null,
+  "providerName": null,
+  "cdnUrl": null,
+  "data": null,
+  "source": { "type": "github", "owner": "user", "repo": "repo", "ref": "main", "path": "data.json", "githubUrl": "https://github.com/user/repo/blob/main/data.json" },
+  "attempts": [
+    { "provider": "jsdelivr", "cdnUrl": "https://cdn.jsdelivr.net/...", "ok": false, "status": 200, "invalidJson": true, "error": "JSON tidak valid: ... Cuplikan: \"<html>blocked</html>\"", "durationMs": 42 }
+  ],
+  "jsonRepaired": false,
+  "cached": false,
+  "shared": false,
+  "fetchedAt": "2026-11-05T10:00:00.000Z",
+  "message": "The response body is not valid JSON and could not be repaired. Tried providers: jsdelivr, statically, github-raw. See attempts[].error for a snippet of each response body."
+}
+```
+
+```js
+const result = await fetchJson("https://github.com/user/repo/blob/main/data.json");
+
+if (!result.ok) {
+  console.warn(result.message); // English, ready to show to a user or log
+  console.warn(result.attempts.map((a) => a.error));
+} else {
+  console.log(result.data);
+}
+```
+
+Details worth knowing:
+
+- The envelope is **never cached**, so a later call retries from scratch.
+- Only invalid JSON triggers it. HTTP failures (404/500) and network errors still throw `FetchError`, so real outages are not hidden behind a `null` payload.
+- A mixed failure (one provider returns HTML, another times out) still throws `FetchError`, with `attempts[].invalidJson` telling you which was which.
+- `fetchJsonData()` has no envelope to carry the message, so it throws `FetchError` (with `invalidJson: true`) rather than returning `null` silently.
+
+### Repairing broken JSON
+
+A repair pass runs automatically before a body is declared invalid. Set `jsonRepair: false` to disable it and require strictly valid JSON:
+
+```js
+const client = createClient({ jsonRepair: false }); // strict
+```
+
+The repair set is deliberately conservative, and every step is applied only outside string literals:
+
+| Problem | Example |
+| --- | --- |
+| UTF-8 BOM | `\uFEFF{"a":1}` |
+| Trailing comma | `{"a":1,}` / `[1,2,]` |
+| Line comment | `// note` |
+| Block comment | `/* note */` |
+
+Anything else is left alone, so an HTML error page is never mistaken for data. When a repair was actually needed, the result says so:
+
+```js
+const result = await client.fetchJson(url);
+if (result.ok && result.jsonRepaired) {
+  // The source file is malformed — consider fixing it upstream.
+}
+```
+
+Repair is part of the cache key, so repaired and strict responses never collide.
 
 ## Accepted Input Formats
 
@@ -117,7 +219,7 @@ parseSource({ user: "user", repo: "repo", branch: "dev", path: "a.json" }); // a
 
 ## Configuration
 
-Use `createClient()` for configuration reused across calls:
+Use `createClient()` for configuration reused across calls. Every option is optional; the values below are examples of overrides, not the defaults (see the table underneath):
 
 ```js
 import { createClient } from "cascadn";
@@ -147,6 +249,7 @@ await client.fetchJson(url, { skipCache: true, timeout: 3000 });
 | `retryDelay` | `300` | Base delay between retries (ms), increases linearly |
 | `headers` | `{ Accept: ... }` | Request headers |
 | `parseJson` | `true` | `false` to return raw text |
+| `jsonRepair` | `true` | Conservative repair (BOM, comments, trailing comma) before parsing; `false` for strict |
 | `cache` | `true` | Enable/disable cache |
 | `cacheTTL` | `300000` | Cache entry lifetime (ms) |
 | `cacheMax` | `100` | Maximum in-memory cache entries |
@@ -170,6 +273,19 @@ await client.fetchJson(url, { skipCache: true });
 // Clear the cache
 await client.clearCache();
 ```
+
+### Cache semantics
+
+- **TTL-only staleness.** Entries go stale purely by age. There is no `ETag`/`Last-Modified` revalidation and no content hashing.
+- **Lazy expiry.** Each entry stores an `expiresAt` timestamp that is checked on read, not by a background timer. An expired entry can therefore stay in memory until the next request for that key.
+- **LRU eviction can win the race.** When the store is full (`cacheMax`), the least recently used entry is dropped even if its TTL has not expired yet.
+- **Only successful results are cached.** A failed fetch (all providers down) is never stored, so failures cannot poison later calls.
+- **No background refresh.** There is no stale-while-revalidate and no proactive recache: a fetch is always triggered by a request whose key is missing or expired.
+- **`skipCache: true` refreshes.** It bypasses the read but still writes the fresh result back into the cache.
+- **Scope is per process.** The default store is in-memory, so separate instances do not share entries and drift apart. Provide a shared `cacheAdapter` (Redis, etc.) if you need a purge that reaches every instance.
+- **Concurrent calls are deduplicated.** Identical in-flight requests collapse into a single fetch; the extra callers receive `shared: true` instead of another network round trip.
+
+Because the cache key includes `ref`, tag and commit URLs are effectively immutable and TTL mostly matters when a branch such as `main` moves.
 
 ### Custom cache adapter
 
@@ -217,11 +333,18 @@ const client = createClient({ providers: ["jsdelivr", unpkg, "github-raw"] });
 
 ## Error Handling
 
+There are two failure paths: **thrown** errors for HTTP and network problems, and the **`ok: false` envelope** for JSON that could not be repaired.
+
 ```js
 import { fetchJson, FetchError, ParseError } from "cascadn";
 
 try {
   const res = await fetchJson(url);
+
+  if (!res.ok) {
+    // Every provider returned unrepairable JSON — not a network problem.
+    console.error(res.message, res.attempts);
+  }
 } catch (error) {
   if (error instanceof ParseError) {
     console.error("Unrecognized source URL:", error.input);
@@ -235,8 +358,8 @@ try {
 
 | Export | Description |
 | --- | --- |
-| `fetchJson(input, options?)` | Fetch JSON + fallback; returns the full response object |
-| `fetchJsonData(input, options?)` | Same, but returns only `data` |
+| `fetchJson(input, options?)` | Fetch JSON + fallback; returns the full response object, or an `ok: false` envelope when JSON cannot be repaired |
+| `fetchJsonData(input, options?)` | Same, but returns only `data`; throws `FetchError` instead of returning an envelope |
 | `buildCdnUrls(input, options?)` | Build the list of CDN URLs without a request |
 | `clearCache()` | Clear the default client's cache |
 | `createClient(options?)` | Create a client with its own configuration |
@@ -285,6 +408,70 @@ npx serve .
 ```bash
 npm test
 ```
+
+## Migrating from 1.x
+
+Version 2.0.0 changes how `fetchJson()` reports JSON that cannot be parsed.
+
+### 1. `fetchJson()` no longer throws for unrepairable JSON
+
+In 1.x every total failure threw `FetchError` — including a CDN serving an HTML error page. In 2.x, when all providers return JSON that cannot be repaired, the call **resolves** with an envelope instead:
+
+```js
+// 1.x
+try {
+  const res = await fetchJson(url);
+  render(res.data);
+} catch (error) {
+  // also reached for invalid JSON
+}
+
+// 2.x
+try {
+  const res = await fetchJson(url);
+
+  if (!res.ok) {
+    console.error(res.message, res.attempts);
+    return;
+  }
+
+  render(res.data);
+} catch (error) {
+  // HTTP and network failures still land here
+}
+```
+
+Keep the `try/catch`: HTTP 404/500 and network errors still throw `FetchError`. Only the invalid-JSON case changed.
+
+### 2. TypeScript: `fetchJson()` now returns a union
+
+`FetchResult<T>` gained `ok: true`, and an `ok: false` counterpart named `FetchFailure` was added. The return type is now `FetchOutcome<T> = FetchResult<T> | FetchFailure`, so `res.data` needs narrowing via `if (res.ok)` before it compiles.
+
+`fetchJsonData()` is unaffected: it still returns `T` and throws on failure.
+
+### 3. `jsonRepair` defaults to `true`
+
+Bodies containing a UTF-8 BOM, comments, or trailing commas used to fail outright. They are now repaired automatically and returned with `jsonRepaired: true`. To require strictly valid JSON again:
+
+```js
+const client = createClient({ jsonRepair: false });
+```
+
+Be aware that with `jsonRepair: false` such a body now yields an `ok: false` envelope rather than a thrown error.
+
+### New in 2.0
+
+| Addition | Location |
+| --- | --- |
+| `ok` | every response |
+| `message` | `null` on success, English explanation on failure |
+| `jsonRepaired` | result object |
+| `invalidJson` | each entry of `attempts[]` |
+| `jsonRepair` option | client configuration |
+| `FetchFailure`, `FetchOutcome` | exported types |
+| `FetchError.invalidJson` | thrown by `fetchJsonData()` |
+
+The cache key now also includes the repair mode. The cache is in-memory only, so there is nothing to migrate.
 
 ## License
 

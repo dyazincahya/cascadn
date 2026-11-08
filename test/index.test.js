@@ -146,6 +146,10 @@ test("fetchJson: JSON tidak valid memicu fallback", async () => {
   const result = await client.fetchJson(GH_URL);
   assert.equal(result.provider, "statically");
   assert.deepEqual(result.data, { ok: true });
+  assert.equal(result.attempts[0].invalidJson, true);
+  // Flag hanya diisi pada percobaan gagal.
+  assert.equal(result.attempts[1].invalidJson, undefined);
+  assert.equal(result.attempts[1].ok, true);
 });
 
 test("fetchJsonData: hanya mengembalikan data", async () => {
@@ -257,4 +261,262 @@ test("MemoryCache: TTL dan eviksi LRU", async () => {
 
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(cache.get("b"), undefined); // sudah kedaluwarsa
+});
+
+// --- Validasi & perbaikan JSON ---
+
+function singleProviderClient(fetchImpl, options = {}) {
+  return createClient({ cache: false, providers: ["jsdelivr"], fetch: fetchImpl, ...options });
+}
+
+test("json: hasil sukses menandai ok true dan message null", async () => {
+  const client = singleProviderClient(async () => jsonResponse({ a: 1 }));
+
+  const result = await client.fetchJson(GH_URL);
+  assert.equal(result.ok, true);
+  assert.equal(result.message, null);
+  assert.equal(result.jsonRepaired, false);
+  assert.deepEqual(result.data, { a: 1 });
+});
+
+test("json: perbaikan konservatif aktif secara default", async () => {
+  const body = "\uFEFF" + JSON.stringify({ a: 1 });
+  const client = singleProviderClient(async () => jsonResponse(body));
+
+  const result = await client.fetchJson(GH_URL);
+  assert.equal(result.ok, true);
+  assert.equal(result.jsonRepaired, true);
+  assert.deepEqual(result.data, { a: 1 });
+});
+
+test("json: envelope kegagalan memakai bentuk response default", async () => {
+  const client = singleProviderClient(async () => jsonResponse("<html>blocked</html>"));
+
+  const result = await client.fetchJson(GH_URL);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.provider, null);
+  assert.equal(result.providerName, null);
+  assert.equal(result.cdnUrl, null);
+  assert.equal(result.data, null);
+  assert.equal(result.jsonRepaired, false);
+  assert.equal(result.cached, false);
+  assert.equal(result.shared, false);
+  assert.equal(result.source.owner, "user");
+  assert.equal(typeof result.fetchedAt, "string");
+  assert.equal(result.attempts.length, 1);
+  assert.equal(result.attempts[0].ok, false);
+  assert.equal(result.attempts[0].invalidJson, true);
+});
+
+test("json: pesan envelope dalam English dan menyebut provider yang dicoba", async () => {
+  const client = singleProviderClient(async () => jsonResponse("404: Not Found"));
+
+  const { message } = await client.fetchJson(GH_URL);
+
+  assert.match(message, /not valid JSON/i);
+  assert.match(message, /could not be repaired/i);
+  assert.match(message, /jsdelivr/);
+  assert.match(message, /attempts\[\]\.error/);
+});
+
+test("json: body kosong memberi alasan khusus dan tetap jadi envelope", async () => {
+  const client = singleProviderClient(async () => jsonResponse("   \n  "));
+
+  const result = await client.fetchJson(GH_URL);
+  assert.equal(result.ok, false);
+  assert.match(result.attempts[0].error, /kosong/i);
+});
+
+test("json: envelope dikembalikan saat semua provider invalid JSON", async () => {
+  const client = createClient({
+    cache: false,
+    fetch: async () => jsonResponse("<html>blocked</html>"),
+  });
+
+  const result = await client.fetchJson(GH_URL);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.data, null);
+  assert.equal(result.attempts.length, 3);
+  assert.ok(result.attempts.every((attempt) => attempt.invalidJson === true));
+  // Pesan detail per percobaan tetap memuat cuplikan body.
+  assert.match(result.attempts[0].error, /JSON tidak valid/);
+  assert.match(result.attempts[0].error, /Cuplikan: "<html>blocked<\/html>"/);
+});
+
+test("json: fetchJsonData melempar FetchError saat envelope", async () => {
+  const client = singleProviderClient(async () => jsonResponse("<html>blocked</html>"));
+
+  await assert.rejects(
+    () => client.fetchJsonData(GH_URL),
+    (error) => {
+      assert.ok(error instanceof FetchError);
+      assert.equal(error.invalidJson, true);
+      assert.match(error.message, /not valid JSON/i);
+      return true;
+    },
+  );
+});
+
+test("json: HTML pada satu provider tidak dianggap invalid JSON di provider lain", async () => {
+  const client = createClient({
+    cache: false,
+    fetch: async (url) => {
+      if (url.includes("cdn.jsdelivr.net")) return jsonResponse("<html>nope</html>");
+      throw new Error("network down");
+    },
+  });
+
+  await assert.rejects(
+    () => client.fetchJson(GH_URL),
+    (error) => {
+      assert.equal(error.invalidJson, false);
+      assert.equal(error.attempts[0].invalidJson, true);
+      assert.equal(error.attempts[1].invalidJson, false);
+      return true;
+    },
+  );
+});
+
+test("json: jsonRepair false mematikan perbaikan sehingga BOM jadi envelope", async () => {
+  const body = "\uFEFF" + JSON.stringify({ a: 1 });
+  const client = singleProviderClient(async () => jsonResponse(body), { jsonRepair: false });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.equal(result.ok, false);
+  assert.equal(result.data, null);
+});
+
+test("json: jsonRepair memperbaiki BOM secara eksplisit", async () => {
+  const body = "\uFEFF" + JSON.stringify({ a: 1 });
+  const client = singleProviderClient(async () => jsonResponse(body), { jsonRepair: true });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.data, { a: 1 });
+  assert.equal(result.jsonRepaired, true);
+});
+
+test("json: jsonRepair memperbaiki trailing comma", async () => {
+  const client = singleProviderClient(async () => jsonResponse('{"a":1,"b":[1,2,],}'), {
+    jsonRepair: true,
+  });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.deepEqual(result.data, { a: 1, b: [1, 2] });
+  assert.equal(result.jsonRepaired, true);
+});
+
+test("json: jsonRepair memperbaiki komentar baris dan blok", async () => {
+  const body = `{
+  // komentar baris
+  "a": 1, /* komentar blok */
+  "b": [1, 2], // koma sebelum penutup
+}`;
+  const client = singleProviderClient(async () => jsonResponse(body), { jsonRepair: true });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.deepEqual(result.data, { a: 1, b: [1, 2] });
+  assert.equal(result.jsonRepaired, true);
+});
+
+test("json: jsonRepair tidak merusak string yang berisi koma, kurung, dan komentar", async () => {
+  const body = '{"pattern": ",}", "cmt": "bukan // komentar /* juga */",}';
+  const client = singleProviderClient(async () => jsonResponse(body), { jsonRepair: true });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.deepEqual(result.data, {
+    pattern: ",}",
+    cmt: "bukan // komentar /* juga */",
+  });
+  assert.equal(result.jsonRepaired, true);
+});
+
+test("json: jsonRepair mempertahankan struktur bersarang", async () => {
+  const body = '{"a":{"b":[1,{"c":null}]},"d":[true,false],}';
+  const client = singleProviderClient(async () => jsonResponse(body), { jsonRepair: true });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.deepEqual(result.data, { a: { b: [1, { c: null }] }, d: [true, false] });
+});
+
+test("json: HTML tidak bisa diperbaiki sehingga jadi envelope", async () => {
+  const client = singleProviderClient(async () => jsonResponse("<!DOCTYPE html><html></html>"), {
+    jsonRepair: true,
+  });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.equal(result.ok, false);
+  assert.equal(result.data, null);
+  assert.equal(result.attempts[0].invalidJson, true);
+});
+
+test("json: JSON bersih ditandai jsonRepaired false", async () => {
+  const client = singleProviderClient(async () => jsonResponse({ a: 1 }), { jsonRepair: true });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.deepEqual(result.data, { a: 1 });
+  assert.equal(result.jsonRepaired, false);
+});
+
+test("json: parseJson false mengembalikan body apa adanya tanpa validasi", async () => {
+  const client = singleProviderClient(async () => jsonResponse("bukan json sama sekali"), {
+    parseJson: false,
+  });
+
+  const result = await client.fetchJson(GH_URL);
+  assert.equal(result.data, "bukan json sama sekali");
+  assert.equal(result.jsonRepaired, false);
+  assert.equal(result.attempts[0].ok, true);
+});
+
+test("json: envelope tidak masuk cache, percobaan berikutnya tetap segar", async () => {
+  let body = "rusak";
+  let count = 0;
+  const client = createClient({
+    providers: ["jsdelivr"],
+    fetch: async () => {
+      count += 1;
+      return jsonResponse(body);
+    },
+  });
+
+  const failed = await client.fetchJson(GH_URL);
+  assert.equal(failed.ok, false);
+  assert.equal(count, 1);
+
+  body = JSON.stringify({ ok: true });
+  const result = await client.fetchJson(GH_URL);
+  assert.equal(result.ok, true);
+  assert.equal(result.cached, false);
+  assert.deepEqual(result.data, { ok: true });
+  assert.equal(count, 2);
+});
+
+test("json: mode dengan dan tanpa perbaikan memakai entri cache terpisah", async () => {
+  const body = "\uFEFF" + JSON.stringify({ a: 1 });
+  let count = 0;
+  const client = createClient({
+    providers: ["jsdelivr"],
+    fetch: async () => {
+      count += 1;
+      return jsonResponse(body);
+    },
+  });
+
+  const repaired = await client.fetchJson(GH_URL);
+  assert.equal(repaired.ok, true);
+  assert.equal(repaired.jsonRepaired, true);
+  assert.equal(count, 1);
+
+  const strict = await client.fetchJson(GH_URL, { jsonRepair: false });
+  assert.equal(strict.ok, false); // cache key berbeda, jadi tidak memakai entri hasil perbaikan
+  assert.equal(count, 2);
+
+  const cachedAgain = await client.fetchJson(GH_URL);
+  assert.equal(cachedAgain.ok, true);
+  assert.equal(cachedAgain.cached, true);
+  assert.equal(cachedAgain.jsonRepaired, true);
+  assert.equal(count, 2);
 });

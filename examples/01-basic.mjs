@@ -19,6 +19,7 @@ for (const item of buildCdnUrls(GITHUB_URL)) {
 // 3. Ambil JSON dengan fallback otomatis + metadata
 console.log("\n3) fetchJson");
 const res = await fetchJson(GITHUB_URL);
+if (!res.ok) throw new Error(res.message); // JSON tidak valid dan tidak bisa diperbaiki
 console.log(`   provider : ${res.provider} (${res.providerName})`);
 console.log(`   cdnUrl   : ${res.cdnUrl}`);
 console.log(`   cached   : ${res.cached}`);

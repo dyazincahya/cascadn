@@ -1,7 +1,8 @@
 import { parseSource } from "./parse.js";
 import { resolveProviders, buildProviderUrls } from "./providers.js";
 import { MemoryCache } from "./cache.js";
-import { CDNError, FetchError } from "./errors.js";
+import { parseJsonBody } from "./json.js";
+import { CDNError, FetchError, InvalidJsonError } from "./errors.js";
 
 const DEFAULTS = {
   providers: undefined, // default: jsdelivr -> statically -> github-raw
@@ -10,6 +11,7 @@ const DEFAULTS = {
   retryDelay: 300,
   headers: { Accept: "application/json, text/plain, */*" },
   parseJson: true,
+  jsonRepair: true,
   cache: true,
   cacheTTL: 5 * 60 * 1000,
   cacheMax: 100,
@@ -111,6 +113,33 @@ async function requestText(url, options, fetchImpl) {
 }
 
 /**
+ * Envelope kegagalan untuk kasus JSON tidak valid yang tidak bisa diperbaiki.
+ * Bentuknya sama dengan response sukses, dengan `ok: false`, `data: null`,
+ * dan `message` berisi penjelasan (English).
+ */
+function createInvalidJsonOutcome({ source, attempts }) {
+  const providerIds = attempts.map((attempt) => attempt.provider).join(", ");
+
+  return {
+    ok: false,
+    provider: null,
+    providerName: null,
+    cdnUrl: null,
+    data: null,
+    source,
+    attempts,
+    jsonRepaired: false,
+    cached: false,
+    shared: false,
+    fetchedAt: new Date().toISOString(),
+    message:
+      "The response body is not valid JSON and could not be repaired. " +
+      `Tried providers: ${providerIds}. ` +
+      "See attempts[].error for a snippet of each response body.",
+  };
+}
+
+/**
  * Inti fallback: coba tiap provider berurutan sampai ada yang berhasil
  * mengembalikan response valid (HTTP ok + JSON valid).
  */
@@ -130,7 +159,17 @@ async function runWithFallback(source, options) {
 
     try {
       const response = await requestText(cdnUrl, options, fetchImpl);
-      const data = options.parseJson === false ? response.text : JSON.parse(response.text);
+
+      let data;
+      let jsonRepaired = false;
+
+      if (options.parseJson === false) {
+        data = response.text;
+      } else {
+        const parsed = parseJsonBody(response.text, { repair: options.jsonRepair !== false });
+        data = parsed.data;
+        jsonRepaired = parsed.repaired;
+      }
 
       attempts.push({
         provider: provider.id,
@@ -141,15 +180,18 @@ async function runWithFallback(source, options) {
       });
 
       return {
+        ok: true,
         provider: provider.id,
         providerName: provider.name,
         cdnUrl,
         data,
         source,
         attempts,
+        jsonRepaired,
         cached: false,
         shared: false,
         fetchedAt: new Date().toISOString(),
+        message: null,
       };
     } catch (error) {
       attempts.push({
@@ -158,10 +200,16 @@ async function runWithFallback(source, options) {
         ok: false,
         status: error.status ?? null,
         error: error.message,
+        invalidJson: error instanceof InvalidJsonError,
         durationMs: Date.now() - startedAt,
       });
     }
   }
+
+  const invalidJsonOnly =
+    attempts.length > 0 && attempts.every((attempt) => attempt.invalidJson === true);
+
+  if (invalidJsonOnly) return createInvalidJsonOutcome({ source, attempts });
 
   throw new FetchError(
     `Gagal mengambil data dari semua provider (${providerList.map((p) => p.id).join(", ")})`,
@@ -186,7 +234,8 @@ export function createClient(options = {}) {
     const providerIds = resolveProviders(opts.providers)
       .map((p) => p.id)
       .join(",");
-    const mode = opts.parseJson === false ? "text" : "json";
+    const mode =
+      opts.parseJson === false ? "text" : opts.jsonRepair === true ? "json+repair" : "json";
     return `${source.owner}/${source.repo}@${source.ref}/${source.path}#${providerIds}#${mode}`;
   }
 
@@ -211,7 +260,8 @@ export function createClient(options = {}) {
 
     try {
       const result = await task;
-      if (cache) await cache.set(key, result, opts.cacheTTL);
+      // Envelope kegagalan tidak pernah di-cache.
+      if (cache && result.ok !== false) await cache.set(key, result, opts.cacheTTL);
       return result;
     } finally {
       inflight.delete(key);
@@ -220,6 +270,17 @@ export function createClient(options = {}) {
 
   async function fetchJsonData(input, overrides) {
     const result = await fetchJson(input, overrides);
+
+    if (result.ok === false) {
+      // Tidak ada envelope pada helper ini, jadi kegagalan tetap dilempar
+      // daripada mengembalikan null secara diam-diam.
+      throw new FetchError(result.message, {
+        attempts: result.attempts,
+        source: result.source,
+        invalidJson: true,
+      });
+    }
+
     return result.data;
   }
 

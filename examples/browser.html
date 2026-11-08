@@ -117,6 +117,13 @@
 
         try {
           const result = await client.fetchJson(input.value.trim());
+
+          if (!result.ok) {
+            meta.innerHTML = `<span class="error">Invalid JSON</span> ${result.message}`;
+            output.textContent = JSON.stringify(result.attempts, null, 2);
+            return;
+          }
+
           const fallbackNote =
             result.attempts.length > 1 ? ` (${result.attempts.length} percobaan)` : "";
 
